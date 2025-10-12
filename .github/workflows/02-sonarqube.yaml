@@ -85,7 +85,7 @@ jobs:
             -Dsonar.projectName="Local SonarQube Demo" \
             -Dsonar.sources=. \
             -Dsonar.scm.disabled=true
-            -Dsonar.exclusions=**/tests/**,**/*.png,**/*.jpg,**/*.jpeg,**/*.gif,**/*.svg,**/uploads/** \
+            -Dsonar.exclusions="**/tests/**,**/*.png,**/*.jpg,**/*.jpeg,**/*.gif,**/*.svg,**/uploads/**" \
             -Dsonar.sourceEncoding=UTF-8 \
             -Dsonar.host.url=$SONAR_HOST_URL \
             -Dsonar.login=$SONAR_TOKEN \
