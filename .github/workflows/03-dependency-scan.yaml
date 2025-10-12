@@ -30,30 +30,42 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️. Setup Node.js
+      # 2️. Setup Node.js (v22 para compatibilidade com libxmljs2)
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: 20
+          node-version: 22
 
-      # 3️. Instalar dependências
-      - name: Install dependencies
+      # 3️. Instalar dependências de compilação
+      - name: Install build tools
         run: |
           set -e
-          npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential python3
+          echo "Build tools installed."
+
+      # 4️. Instalar dependências do projeto (resiliente ao lockfile ausente)
+      - name: Install Node.js dependencies
+        run: |
+          set -e
+          if [ -f package-lock.json ]; then
+            npm ci --no-audit --no-fund || npm install --no-audit --no-fund
+          else
+            npm install --no-audit --no-fund
+          fi
           echo "Node modules installed."
 
-      # 4️. Instalar Trivy (binário direto)
+      # 5️. Instalar Trivy (binário direto)
       - name: Install Trivy
         run: |
           set -e
           echo "Installing Trivy..."
           TRIVY_VERSION="0.57.1"
-          curl -sfL https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz | tar zx
+          curl -sfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" | tar zx
           sudo mv trivy /usr/local/bin/
           trivy --version
 
-      # 5️. Executar scan
+      # 6️. Executar scan
       - name: Run Trivy scan on Node dependencies
         run: |
           set -e
@@ -68,7 +80,7 @@ jobs:
             --timeout 5m
           echo "Scan completed. JSON report saved."
 
-      # 6️. Gerar resumo e falhar se HIGH/CRITICAL
+      # 7️. Gerar resumo e falhar se HIGH/CRITICAL
       - name: Summarize vulnerabilities
         run: |
           set -e
@@ -109,7 +121,7 @@ jobs:
             echo " No HIGH/CRITICAL vulnerabilities detected."
           fi
 
-      # 7️. Upload JSON completo
+      # 8️. Upload JSON completo
       - name: Upload Trivy JSON report
         if: always()
         uses: actions/upload-artifact@v4
