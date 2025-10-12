@@ -42,6 +42,7 @@ jobs:
         run: |
           sudo apt-get update -y
           sudo apt-get install -y openjdk-17-jdk jq unzip curl locales
+          sudo apt-get install -y nodejs npm
           sudo locale-gen en_US.UTF-8
           export LANG=en_US.UTF-8
 
@@ -84,7 +85,7 @@ jobs:
             -Dsonar.projectKey=local-analysis \
             -Dsonar.projectName="Local SonarQube Demo" \
             -Dsonar.sources=. \
-            -Dsonar.scm.disabled=true
+            -Dsonar.scm.disabled=true \
             -Dsonar.exclusions="**/tests/**,**/*.png,**/*.jpg,**/*.jpeg,**/*.gif,**/*.svg,**/uploads/**" \
             -Dsonar.sourceEncoding=UTF-8 \
             -Dsonar.host.url=$SONAR_HOST_URL \
