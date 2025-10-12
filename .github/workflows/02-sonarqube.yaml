@@ -1,0 +1,174 @@
+# ---------------------------------------------------------
+# Workflow: 02-SonarQube.yml
+# Objetivo: Executar análise SAST com SonarQube local (self-contained)
+# Ferramentas: SonarQube
+# ---------------------------------------------------------
+
+name: 02-SonarQube
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+# Cancel previous runs if a new commit is pushed to the same PR
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  sonar-sast:
+    name: SAST Analysis (Local SonarQube)
+    runs-on: [arc-runner-set]
+    permissions:
+      contents: read
+      pull-requests: read
+      security-events: write
+
+    services:
+      sonarqube:
+        image: sonarqube:lts-community
+        ports:
+          - 9000:9000
+        options: >-
+          --shm-size=2g
+          -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true
+
+    steps:
+      # 1. Checkout do código
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Instala dependências necessárias
+      - name: Install dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y openjdk-17-jdk jq unzip curl locales
+          sudo apt-get install -y nodejs npm
+          sudo locale-gen en_US.UTF-8
+          export LANG=en_US.UTF-8
+
+      # 3. Baixa e instala o sonar-scanner CLI
+      - name: Install SonarScanner CLI
+        run: |
+          curl -sSLo sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
+          unzip sonar-scanner.zip -d $HOME
+          echo "$HOME/sonar-scanner-5.0.1.3006-linux/bin" >> $GITHUB_PATH
+
+      # 4. Espera o SonarQube ficar disponível
+      - name: Wait for SonarQube to be UP
+        run: |
+          echo "Aguardando SonarQube iniciar..."
+          for i in {1..60}; do
+            STATUS=$(curl -s http://localhost:9000/api/system/status | jq -r '.status' || true)
+            if [ "$STATUS" = "UP" ]; then
+              echo "SonarQube está pronto!"
+              break
+            fi
+            echo "Aguardando... ($i/60)"
+            sleep 5
+          done
+          curl -s http://localhost:9000/api/system/status
+
+      # 5. Cria um token de usuário admin via API
+      - name: Generate admin token
+        id: token
+        run: |
+          TOKEN=$(curl -s -u admin:admin -X POST "http://localhost:9000/api/user_tokens/generate?name=ci-token" | jq -r '.token')
+          echo "SONAR_TOKEN=$TOKEN" >> $GITHUB_ENV
+
+      # 6. Executa a análise SAST usando sonar-scanner CLI
+      - name: Run SonarQube Scanner
+        env:
+          SONAR_HOST_URL: http://localhost:9000
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+        run: |
+          sonar-scanner \
+            -Dsonar.projectKey=local-analysis \
+            -Dsonar.projectName="Local SonarQube Demo" \
+            -Dsonar.sources=. \
+            -Dsonar.scm.disabled=true \
+            -Dsonar.exclusions="**/tests/**,**/*.png,**/*.jpg,**/*.jpeg,**/*.gif,**/*.svg,**/uploads/**" \
+            -Dsonar.sourceEncoding=UTF-8 \
+            -Dsonar.host.url=$SONAR_HOST_URL \
+            -Dsonar.login=$SONAR_TOKEN \
+            -Dsonar.qualitygate.wait=true
+
+      # 7. Extrai métricas básicas via API e mostra no Actions Summary
+      - name: Fetch analysis results and evaluate quality
+        run: |
+          PROJECT_KEY="local-analysis"
+
+          # Busca métricas principais
+          curl -s "http://localhost:9000/api/measures/component?component=${PROJECT_KEY}&metricKeys=bugs,vulnerabilities,code_smells,coverage" -u $SONAR_TOKEN: > sonar-results.json
+
+          # Busca issues detalhados (bugs, smells, vulnerabilities)
+          curl -s "http://localhost:9000/api/issues/search?componentKeys=${PROJECT_KEY}&types=BUG,CODE_SMELL,VULNERABILITY&ps=500" -u $SONAR_TOKEN: > sonar-issues.json
+
+          echo "## SonarQube Static Analysis (Local)" >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+          cat sonar-results.json | jq '.' >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
+          BUGS=$(jq -r '.component.measures[] | select(.metric=="bugs") | .value' sonar-results.json)
+          VULNS=$(jq -r '.component.measures[] | select(.metric=="vulnerabilities") | .value' sonar-results.json)
+          SMELLS=$(jq -r '.component.measures[] | select(.metric=="code_smells") | .value' sonar-results.json)
+          COVERAGE=$(jq -r '.component.measures[] | select(.metric=="coverage") | .value' sonar-results.json)
+
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Métrica | Valor |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "| Bugs | $BUGS |" >> $GITHUB_STEP_SUMMARY
+          echo "| Vulnerabilidades | $VULNS |" >> $GITHUB_STEP_SUMMARY
+          echo "| Code Smells | $SMELLS |" >> $GITHUB_STEP_SUMMARY
+          echo "| Cobertura | ${COVERAGE}% |" >> $GITHUB_STEP_SUMMARY
+
+          # Contagem por severidade
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Severidades encontradas" >> $GITHUB_STEP_SUMMARY
+          echo "| Severidade | Quantidade |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------------|-------------|" >> $GITHUB_STEP_SUMMARY
+          for SEV in BLOCKER CRITICAL MAJOR MINOR INFO; do
+            COUNT=$(jq "[.issues[] | select(.severity==\"$SEV\")] | length" sonar-issues.json)
+            echo "| $SEV | $COUNT |" >> $GITHUB_STEP_SUMMARY
+          done
+
+          # Filtra problemas graves
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Problemas críticos (MAJOR / CRITICAL)" >> $GITHUB_STEP_SUMMARY
+          jq -r '.issues[] | select((.severity=="MAJOR" or .severity=="CRITICAL") and (.type=="BUG" or .type=="CODE_SMELL")) | "- " + .component + ":" + (.line|tostring) + " | " + .message' sonar-issues.json >> $GITHUB_STEP_SUMMARY
+
+          # Avalia condições de falha
+          CRIT_BUGS=$(jq '[.issues[] | select(.severity=="CRITICAL" and .type=="BUG")] | length' sonar-issues.json)
+          MAJOR_BUGS=$(jq '[.issues[] | select(.severity=="MAJOR" and .type=="BUG")] | length' sonar-issues.json)
+          CRIT_SMELLS=$(jq '[.issues[] | select(.severity=="CRITICAL" and .type=="CODE_SMELL")] | length' sonar-issues.json)
+          MAJOR_SMELLS=$(jq '[.issues[] | select(.severity=="MAJOR" and .type=="CODE_SMELL")] | length' sonar-issues.json)
+          VULNS_COUNT=$(jq '[.issues[] | select(.type=="VULNERABILITY")] | length' sonar-issues.json)
+
+          COV_INT=$(echo $COVERAGE | cut -d'.' -f1)
+
+          FAIL=0
+
+          # Falha por vulnerabilidades
+          if [ "$VULNS_COUNT" -gt 0 ]; then
+            echo "Falha: Encontradas vulnerabilidades ($VULNS_COUNT)."
+            FAIL=1
+          fi
+
+          # Falha por bugs ou smells major/critical
+          if [ $((CRIT_BUGS + MAJOR_BUGS + CRIT_SMELLS + MAJOR_SMELLS)) -gt 0 ]; then
+            echo "Falha: Encontrados bugs ou code smells MAJOR/CRITICAL."
+            FAIL=1
+          fi
+
+          # Falha por cobertura baixa
+          if [ "$COV_INT" -lt 60 ]; then
+            echo "Falha: Cobertura de testes abaixo de 60% ($COV_INT%)."
+            FAIL=1
+          fi
+
+          if [ "$FAIL" -eq 1 ]; then
+            echo "Falhando pipeline devido às condições de qualidade não atendidas."
+            exit 1
+          else
+            echo "Qualidade mínima atendida. Pipeline bem-sucedida."
+          fi

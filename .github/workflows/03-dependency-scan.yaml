@@ -1,0 +1,101 @@
+# ---------------------------------------------------------
+# Workflow: 03-Dependency-Scan.yml
+# Objetivo: Detectar vulnerabilidades em dependências Node.js
+# Ferramenta: npm audit (análise direta do package.json)
+# Falha apenas em HIGH/CRITICAL
+# ---------------------------------------------------------
+
+name: 03-Dependency-Scan
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-scan:
+    name: Node.js Dependency Vulnerability Scan
+    runs-on: [arc-runner-set]
+    permissions:
+      contents: read
+      pull-requests: read
+      security-events: write
+
+    steps:
+      # 1️. Checkout
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2️. Setup Node.js (v22 para compatibilidade)
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      # 3️. Verificar vulnerabilidades com npm audit
+      - name: Run npm audit
+        id: audit
+        run: |
+          set -e
+          echo "Running npm audit (no install, using only package.json)..."
+
+          npm audit --json > npm-audit-report.json || true
+
+          if [ ! -s npm-audit-report.json ]; then
+            echo "Audit report not generated!"
+            exit 1
+          fi
+
+          echo "npm audit completed."
+
+      # 4️. Resumir resultados e falhar se houver HIGH/CRITICAL
+      - name: Summarize vulnerabilities
+        run: |
+          set -e
+          REPORT="npm-audit-report.json"
+
+          echo "## Dependency Vulnerability Summary" >> $GITHUB_STEP_SUMMARY
+
+          TOTAL=$(jq '.metadata.vulnerabilities.total // 0' "$REPORT")
+          LOW=$(jq '.metadata.vulnerabilities.low // 0' "$REPORT")
+          MODERATE=$(jq '.metadata.vulnerabilities.moderate // 0' "$REPORT")
+          HIGH=$(jq '.metadata.vulnerabilities.high // 0' "$REPORT")
+          CRITICAL=$(jq '.metadata.vulnerabilities.critical // 0' "$REPORT")
+
+          echo "- CRITICAL: $CRITICAL" >> $GITHUB_STEP_SUMMARY
+          echo "- HIGH: $HIGH" >> $GITHUB_STEP_SUMMARY
+          echo "- MODERATE: $MODERATE" >> $GITHUB_STEP_SUMMARY
+          echo "- LOW: $LOW" >> $GITHUB_STEP_SUMMARY
+          echo "- TOTAL: $TOTAL" >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Packages with vulnerabilities" >> $GITHUB_STEP_SUMMARY
+          jq -r '.vulnerabilities | to_entries[] |
+                "- \(.key): \(.value.via | length) vulnerability(ies), severity: \(.value.severity)"' \
+              "$REPORT" >> $GITHUB_STEP_SUMMARY || echo "No vulnerable packages found." >> $GITHUB_STEP_SUMMARY
+          echo "" >> $GITHUB_STEP_SUMMARY
+
+          echo "### Top 10 Vulnerabilities" >> $GITHUB_STEP_SUMMARY
+          jq -r '.vulnerabilities | to_entries[] | 
+                .value.via[] | 
+                "- \(.name): **\(.severity | ascii_upcase)** — \(.title // .url)"' \
+              "$REPORT" | head -n 10 >> $GITHUB_STEP_SUMMARY || echo "No vulnerabilities found." >> $GITHUB_STEP_SUMMARY
+
+          if [ "$HIGH" -gt 0 ] || [ "$CRITICAL" -gt 0 ]; then
+            echo "Detected $((HIGH + CRITICAL)) HIGH/CRITICAL vulnerabilities."
+            exit 1
+          else
+            echo "No HIGH/CRITICAL vulnerabilities detected."
+          fi
+
+      # 5️. Upload do relatório completo
+      - name: Upload audit report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: npm-audit-report
+          path: npm-audit-report.json
