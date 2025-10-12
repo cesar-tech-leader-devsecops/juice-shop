@@ -44,11 +44,11 @@ jobs:
       # 4. Espera o SonarQube ficar disponível
       - name: Wait for SonarQube to be UP
         run: |
-          echo " Aguardando SonarQube iniciar..."
+          echo "Aguardando SonarQube iniciar..."
           for i in {1..60}; do
             STATUS=$(curl -s http://localhost:9000/api/system/status | jq -r '.status' || true)
             if [ "$STATUS" = "UP" ]; then
-              echo " SonarQube está pronto!"
+              echo "SonarQube está pronto!"
               break
             fi
             echo "Aguardando... ($i/60)"
@@ -79,10 +79,15 @@ jobs:
             -Dsonar.qualitygate.wait=true
 
       # 7. Extrai métricas básicas via API e mostra no Actions Summary
-      - name: Fetch analysis results
+      - name: Fetch analysis results and evaluate quality
         run: |
           PROJECT_KEY="local-analysis"
+
+          # Busca métricas principais
           curl -s "http://localhost:9000/api/measures/component?component=${PROJECT_KEY}&metricKeys=bugs,vulnerabilities,code_smells,coverage" -u $SONAR_TOKEN: > sonar-results.json
+
+          # Busca issues detalhados (bugs, smells, vulnerabilities)
+          curl -s "http://localhost:9000/api/issues/search?componentKeys=${PROJECT_KEY}&types=BUG,CODE_SMELL,VULNERABILITY&ps=500" -u $SONAR_TOKEN: > sonar-issues.json
 
           echo "## SonarQube Static Analysis (Local)" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
@@ -97,7 +102,58 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Métrica | Valor |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "|  Bugs | $BUGS |" >> $GITHUB_STEP_SUMMARY
-          echo "|  Vulnerabilidades | $VULNS |" >> $GITHUB_STEP_SUMMARY
-          echo "|  Code Smells | $SMELLS |" >> $GITHUB_STEP_SUMMARY
-          echo "|  Cobertura | ${COVERAGE}% |" >> $GITHUB_STEP_SUMMARY
+          echo "| Bugs | $BUGS |" >> $GITHUB_STEP_SUMMARY
+          echo "| Vulnerabilidades | $VULNS |" >> $GITHUB_STEP_SUMMARY
+          echo "| Code Smells | $SMELLS |" >> $GITHUB_STEP_SUMMARY
+          echo "| Cobertura | ${COVERAGE}% |" >> $GITHUB_STEP_SUMMARY
+
+          # Contagem por severidade
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Severidades encontradas" >> $GITHUB_STEP_SUMMARY
+          echo "| Severidade | Quantidade |" >> $GITHUB_STEP_SUMMARY
+          echo "|-------------|-------------|" >> $GITHUB_STEP_SUMMARY
+          for SEV in BLOCKER CRITICAL MAJOR MINOR INFO; do
+            COUNT=$(jq "[.issues[] | select(.severity==\"$SEV\")] | length" sonar-issues.json)
+            echo "| $SEV | $COUNT |" >> $GITHUB_STEP_SUMMARY
+          done
+
+          # Filtra problemas graves
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "### Problemas críticos (MAJOR / CRITICAL)" >> $GITHUB_STEP_SUMMARY
+          jq -r '.issues[] | select((.severity=="MAJOR" or .severity=="CRITICAL") and (.type=="BUG" or .type=="CODE_SMELL")) | "- " + .component + ":" + (.line|tostring) + " | " + .message' sonar-issues.json >> $GITHUB_STEP_SUMMARY
+
+          # Avalia condições de falha
+          CRIT_BUGS=$(jq '[.issues[] | select(.severity=="CRITICAL" and .type=="BUG")] | length' sonar-issues.json)
+          MAJOR_BUGS=$(jq '[.issues[] | select(.severity=="MAJOR" and .type=="BUG")] | length' sonar-issues.json)
+          CRIT_SMELLS=$(jq '[.issues[] | select(.severity=="CRITICAL" and .type=="CODE_SMELL")] | length' sonar-issues.json)
+          MAJOR_SMELLS=$(jq '[.issues[] | select(.severity=="MAJOR" and .type=="CODE_SMELL")] | length' sonar-issues.json)
+          VULNS_COUNT=$(jq '[.issues[] | select(.type=="VULNERABILITY")] | length' sonar-issues.json)
+
+          COV_INT=$(echo $COVERAGE | cut -d'.' -f1)
+
+          FAIL=0
+
+          # Falha por vulnerabilidades
+          if [ "$VULNS_COUNT" -gt 0 ]; then
+            echo "Falha: Encontradas vulnerabilidades ($VULNS_COUNT)."
+            FAIL=1
+          fi
+
+          # Falha por bugs ou smells major/critical
+          if [ $((CRIT_BUGS + MAJOR_BUGS + CRIT_SMELLS + MAJOR_SMELLS)) -gt 0 ]; then
+            echo "Falha: Encontrados bugs ou code smells MAJOR/CRITICAL."
+            FAIL=1
+          fi
+
+          # Falha por cobertura baixa
+          if [ "$COV_INT" -lt 60 ]; then
+            echo "Falha: Cobertura de testes abaixo de 60% ($COV_INT%)."
+            FAIL=1
+          fi
+
+          if [ "$FAIL" -eq 1 ]; then
+            echo "Falhando pipeline devido às condições de qualidade não atendidas."
+            exit 1
+          else
+            echo "Qualidade mínima atendida. Pipeline bem-sucedida."
+          fi
