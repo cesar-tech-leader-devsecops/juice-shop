@@ -30,13 +30,19 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Instala Trivy
+      # 2. Instala dependências necessárias
+      - name: Install system dependencies
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y curl jq unzip
+
+      # 3. Instala Trivy via apt (modo consistente e autocontido)
       - name: Install Trivy
         run: |
-          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+          sudo apt-get install -y trivy
           trivy --version
 
-      # 3. Detecta quais gerenciadores de pacotes estão presentes
+      # 4. Detecta quais gerenciadores de pacotes estão presentes
       - name: Detect package manager
         id: detect
         run: |
@@ -51,7 +57,7 @@ jobs:
           fi
           echo "Detected package manager: $PACKAGE_MANAGER"
 
-      # 4. Executa Trivy para escanear vulnerabilidades nas dependências
+      # 5. Executa Trivy para escanear vulnerabilidades nas dependências
       - name: Run Trivy Dependency Scan
         id: trivy-scan
         run: |
@@ -67,7 +73,7 @@ jobs:
             exit 0
           fi
 
-      # 5. Gera resumo legível no Actions Summary
+      # 6. Gera resumo legível no Actions Summary e falha se houver CVEs críticas/altas
       - name: Generate Dependency Scan Summary
         if: always()
         run: |
