@@ -1,23 +1,17 @@
 # ---------------------------------------------------------
 # Workflow: 02-SonarQube.yml
-# Objetivo: Executar análise estática de código (SAST)
-# Ferramenta: SonarQube rodando localmente (em serviço)
+# Objetivo: Executar análise SAST com SonarQube local (self-contained)
 # ---------------------------------------------------------
 
 name: 02-SonarQube
-
 on:
   push:
     branches: [main, dev]
   pull_request:
 
-permissions:
-  contents: read
-  pull-requests: read
-
 jobs:
   sonar-sast:
-    name: SAST Analysis (SonarQube Auto-Hosted)
+    name: SAST Analysis (Local SonarQube)
     runs-on: ubuntu-latest
 
     services:
@@ -25,21 +19,36 @@ jobs:
         image: sonarqube:lts-community
         ports:
           - 9000:9000
-        # removido o healthcheck que causava "unhealthy"
         options: >-
           --shm-size=2g
+          -e SONAR_ES_BOOTSTRAP_CHECKS_DISABLE=true
 
     steps:
+      # 1. Checkout do código
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Wait for SonarQube to start
+      # 2. Instala dependências necessárias
+      - name: Install dependencies
         run: |
-          echo "Aguardando SonarQube iniciar..."
+          sudo apt-get update -y
+          sudo apt-get install -y openjdk-17-jdk jq unzip curl
+
+      # 3. Baixa e instala o sonar-scanner CLI
+      - name: Install SonarScanner CLI
+        run: |
+          curl -sSLo sonar-scanner.zip https://binaries.sonarsource.com/Distribution/sonar-scanner-cli/sonar-scanner-cli-5.0.1.3006-linux.zip
+          unzip sonar-scanner.zip -d $HOME
+          echo "$HOME/sonar-scanner-5.0.1.3006-linux/bin" >> $GITHUB_PATH
+
+      # 4. Espera o SonarQube ficar disponível
+      - name: Wait for SonarQube to be UP
+        run: |
+          echo " Aguardando SonarQube iniciar..."
           for i in {1..60}; do
-            STATUS=$(curl -s http://localhost:9000/api/system/health | jq -r '.health' || true)
-            if [ "$STATUS" = "GREEN" ]; then
-              echo "SonarQube está pronto!"
+            STATUS=$(curl -s http://localhost:9000/api/system/status | jq -r '.status' || true)
+            if [ "$STATUS" = "UP" ]; then
+              echo " SonarQube está pronto!"
               break
             fi
             echo "Aguardando... ($i/60)"
@@ -47,52 +56,37 @@ jobs:
           done
           curl -s http://localhost:9000/api/system/status
 
-      - name: Generate analysis token
+      # 5. Cria um token de usuário admin via API
+      - name: Generate admin token
         id: token
         run: |
-          echo "Gerando token..."
-          TOKEN_JSON=$(curl -s -u admin:admin -X POST "http://localhost:9000/api/user_tokens/generate?name=github_token")
-          TOKEN=$(echo "$TOKEN_JSON" | jq -r '.token')
-          if [ -z "$TOKEN" ] || [ "$TOKEN" = "null" ]; then
-            echo "Falha ao gerar token."
-            exit 1
-          fi
+          TOKEN=$(curl -s -u admin:admin -X POST "http://localhost:9000/api/user_tokens/generate?name=ci-token" | jq -r '.token')
           echo "SONAR_TOKEN=$TOKEN" >> $GITHUB_ENV
 
-      - name: Setup JDK
-        uses: actions/setup-java@v4
-        with:
-          java-version: '17'
-          distribution: 'temurin'
-
-      - name: Run SonarQube analysis
-        uses: SonarSource/sonarqube-scan-action@v3
+      # 6. Executa a análise SAST usando sonar-scanner CLI
+      - name: Run SonarQube Scanner
         env:
-          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
           SONAR_HOST_URL: http://localhost:9000
-        with:
-          args: >
-            -Dsonar.projectKey=local-analysis
-            -Dsonar.projectName=Local SonarQube Demo
-            -Dsonar.sources=.
-            -Dsonar.exclusions=**/tests/**
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+        run: |
+          sonar-scanner \
+            -Dsonar.projectKey=local-analysis \
+            -Dsonar.projectName="Local SonarQube Demo" \
+            -Dsonar.sources=. \
+            -Dsonar.exclusions=**/tests/** \
+            -Dsonar.host.url=$SONAR_HOST_URL \
+            -Dsonar.login=$SONAR_TOKEN \
             -Dsonar.qualitygate.wait=true
 
-      - name: Fetch analysis metrics
+      # 7. Extrai métricas básicas via API e mostra no Actions Summary
+      - name: Fetch analysis results
         run: |
-          sleep 10
-          METRICS="bugs,vulnerabilities,code_smells,coverage"
-          RESPONSE=$(curl -s -u admin:${{ env.SONAR_TOKEN }} \
-            "http://localhost:9000/api/measures/component?component=local-analysis&metricKeys=$METRICS")
-          echo "$RESPONSE" | jq '.' > sonar-results.json
-          echo "SONAR_RESPONSE=$(cat sonar-results.json | jq -c .)" >> $GITHUB_ENV
+          PROJECT_KEY="local-analysis"
+          curl -s "http://localhost:9000/api/measures/component?component=${PROJECT_KEY}&metricKeys=bugs,vulnerabilities,code_smells,coverage" -u $SONAR_TOKEN: > sonar-results.json
 
-      - name: Summarize analysis
-        if: always()
-        run: |
           echo "## SonarQube Static Analysis (Local)" >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
-          echo "${{ env.SONAR_RESPONSE }}" | jq '.' >> $GITHUB_STEP_SUMMARY
+          cat sonar-results.json | jq '.' >> $GITHUB_STEP_SUMMARY
           echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
           BUGS=$(jq -r '.component.measures[] | select(.metric=="bugs") | .value' sonar-results.json)
@@ -103,7 +97,7 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
           echo "| Métrica | Valor |" >> $GITHUB_STEP_SUMMARY
           echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
-          echo "| Bugs | $BUGS |" >> $GITHUB_STEP_SUMMARY
-          echo "| Vulnerabilidades | $VULNS |" >> $GITHUB_STEP_SUMMARY
-          echo "| Code Smells | $SMELLS |" >> $GITHUB_STEP_SUMMARY
-          echo "| Cobertura | ${COVERAGE}% |" >> $GITHUB_STEP_SUMMARY
+          echo "|  Bugs | $BUGS |" >> $GITHUB_STEP_SUMMARY
+          echo "|  Vulnerabilidades | $VULNS |" >> $GITHUB_STEP_SUMMARY
+          echo "|  Code Smells | $SMELLS |" >> $GITHUB_STEP_SUMMARY
+          echo "|  Cobertura | ${COVERAGE}% |" >> $GITHUB_STEP_SUMMARY
