@@ -1,7 +1,7 @@
 # ---------------------------------------------------------
 # Workflow: 03-Dependency-Scan.yml
 # Objetivo: Detectar vulnerabilidades em dependências Node.js
-# Ferramenta: Trivy (gera e escaneia SBOM - rápido e autocontido)
+# Ferramenta: npm audit (análise direta do package.json)
 # Falha apenas em HIGH/CRITICAL
 # ---------------------------------------------------------
 
@@ -36,71 +36,49 @@ jobs:
         with:
           node-version: 22
 
-      # 3️. Instalar Trivy
-      - name: Install Trivy
+      # 3️. Verificar vulnerabilidades com npm audit
+      - name: Run npm audit
+        id: audit
         run: |
           set -e
-          echo "Installing Trivy..."
-          TRIVY_VERSION="0.57.1"
-          curl -sfL "https://github.com/aquasecurity/trivy/releases/download/v${TRIVY_VERSION}/trivy_${TRIVY_VERSION}_Linux-64bit.tar.gz" | tar zx
-          sudo mv trivy /usr/local/bin/
-          trivy --version
+          echo "Running npm audit (no install, using only package.json)..."
 
-      # 4️. Gerar SBOM CycloneDX
-      - name: Generate SBOM (CycloneDX)
-        run: |
-          set -e
-          echo "Generating CycloneDX SBOM..."
-          trivy fs . --format cyclonedx --output sbom.cdx.json --no-progress
-          echo "SBOM generated."
+          # Executa auditoria apenas com o package.json
+          npm audit --json > npm-audit-report.json || true
 
-      # 5️. Escanear SBOM gerado
-      - name: Run Trivy scan on generated SBOM
-        run: |
-          set -e
-          echo "Running vulnerability scan on SBOM..."
-          trivy sbom sbom.cdx.json \
-            --scanners vuln \
-            --severity LOW,MEDIUM,HIGH,CRITICAL \
-            --format json \
-            --output trivy-deps.json \
-            --no-progress \
-            --timeout 5m
-          echo "Scan completed. JSON report saved."
-
-      # 6️. Gerar resumo e falhar se HIGH/CRITICAL
-      - name: Summarize vulnerabilities
-        run: |
-          set -e
-          REPORT="trivy-deps.json"
-
-          if [ ! -s "$REPORT" ]; then
-            echo "No report generated!"
+          if [ ! -s npm-audit-report.json ]; then
+            echo "Audit report not generated!"
             exit 1
           fi
 
+          echo "npm audit completed."
+
+      # 4️. Resumir resultados e falhar se houver HIGH/CRITICAL
+      - name: Summarize vulnerabilities
+        run: |
+          set -e
+          REPORT="npm-audit-report.json"
+
           echo "## Dependency Vulnerability Summary" >> $GITHUB_STEP_SUMMARY
-          TOTAL=$(jq '[.Results[]? | .Vulnerabilities[]?] | length' "$REPORT")
-          LOW=$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity=="LOW")] | length' "$REPORT")
-          MEDIUM=$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity=="MEDIUM")] | length' "$REPORT")
-          HIGH=$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity=="HIGH")] | length' "$REPORT")
-          CRITICAL=$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity=="CRITICAL")] | length' "$REPORT")
+
+          TOTAL=$(jq '.metadata.vulnerabilities.total // 0' "$REPORT")
+          LOW=$(jq '.metadata.vulnerabilities.low // 0' "$REPORT")
+          MODERATE=$(jq '.metadata.vulnerabilities.moderate // 0' "$REPORT")
+          HIGH=$(jq '.metadata.vulnerabilities.high // 0' "$REPORT")
+          CRITICAL=$(jq '.metadata.vulnerabilities.critical // 0' "$REPORT")
 
           echo "- CRITICAL: $CRITICAL" >> $GITHUB_STEP_SUMMARY
           echo "- HIGH: $HIGH" >> $GITHUB_STEP_SUMMARY
-          echo "- MEDIUM: $MEDIUM" >> $GITHUB_STEP_SUMMARY
+          echo "- MODERATE: $MODERATE" >> $GITHUB_STEP_SUMMARY
           echo "- LOW: $LOW" >> $GITHUB_STEP_SUMMARY
           echo "- TOTAL: $TOTAL" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          echo "### Top 10 HIGH/CRITICAL" >> $GITHUB_STEP_SUMMARY
-          jq -r '[.Results[]? | .Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL") |
-            "- \(.PkgName)@\(.InstalledVersion): **\(.Severity)** — \(.Title)"] | .[0:10][]' "$REPORT" >> $GITHUB_STEP_SUMMARY
-          echo "" >> $GITHUB_STEP_SUMMARY
-
-          echo "### Top 10 MEDIUM/LOW" >> $GITHUB_STEP_SUMMARY
-          jq -r '[.Results[]? | .Vulnerabilities[]? | select(.Severity=="MEDIUM" or .Severity=="LOW") |
-            "- \(.PkgName)@\(.InstalledVersion): **\(.Severity)** — \(.Title)"] | .[0:10][]' "$REPORT" >> $GITHUB_STEP_SUMMARY
+          echo "### Top 10 Vulnerabilities" >> $GITHUB_STEP_SUMMARY
+          jq -r '
+            .advisories[]? |
+            "- \(.module_name)@\(.findings[0].version): **\(.severity | ascii_upcase)** — \(.title)"' \
+            "$REPORT" | head -n 10 >> $GITHUB_STEP_SUMMARY || echo "No vulnerabilities found." >> $GITHUB_STEP_SUMMARY
 
           if [ "$HIGH" -gt 0 ] || [ "$CRITICAL" -gt 0 ]; then
             echo "Detected $((HIGH + CRITICAL)) HIGH/CRITICAL vulnerabilities."
@@ -109,12 +87,10 @@ jobs:
             echo "No HIGH/CRITICAL vulnerabilities detected."
           fi
 
-      # 7️. Upload dos relatórios
-      - name: Upload reports
+      # 5️. Upload do relatório completo
+      - name: Upload audit report
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: trivy-dependency-reports
-          path: |
-            sbom.cdx.json
-            trivy-deps.json
+          name: npm-audit-report
+          path: npm-audit-report.json
