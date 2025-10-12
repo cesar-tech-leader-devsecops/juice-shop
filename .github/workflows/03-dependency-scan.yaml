@@ -1,8 +1,8 @@
 # ---------------------------------------------------------
 # Workflow: 03-Dependency-Scan.yml
 # Objetivo: Detectar vulnerabilidades em dependências Node.js
-# Ferramenta: Trivy (modo SBOM - mais rápido e leve)
-# Autocontido, sem dependência de lockfile, falha apenas em HIGH/CRITICAL
+# Ferramenta: Trivy (gera e escaneia SBOM - rápido e autocontido)
+# Falha apenas em HIGH/CRITICAL
 # ---------------------------------------------------------
 
 name: 03-Dependency-Scan
@@ -30,13 +30,13 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2️. Setup Node.js (v22 para compatibilidade com libxmljs2)
+      # 2️. Setup Node.js (v22 para compatibilidade)
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
           node-version: 22
 
-      # 3️. Instalar Trivy (binário direto)
+      # 3️. Instalar Trivy
       - name: Install Trivy
         run: |
           set -e
@@ -46,12 +46,20 @@ jobs:
           sudo mv trivy /usr/local/bin/
           trivy --version
 
-      # 4️. Executar análise SBOM (sem instalar dependências)
-      - name: Run Trivy SBOM scan on Node.js dependencies
+      # 4️. Gerar SBOM CycloneDX
+      - name: Generate SBOM (CycloneDX)
         run: |
           set -e
-          echo "Running Trivy SBOM vulnerability scan..."
-          trivy sbom . \
+          echo "Generating CycloneDX SBOM..."
+          trivy fs . --format cyclonedx --output sbom.cdx.json --no-progress
+          echo "SBOM generated."
+
+      # 5️. Escanear SBOM gerado
+      - name: Run Trivy scan on generated SBOM
+        run: |
+          set -e
+          echo "Running vulnerability scan on SBOM..."
+          trivy sbom sbom.cdx.json \
             --scanners vuln \
             --severity LOW,MEDIUM,HIGH,CRITICAL \
             --format json \
@@ -60,7 +68,7 @@ jobs:
             --timeout 5m
           echo "Scan completed. JSON report saved."
 
-      # 5️. Gerar resumo e falhar se HIGH/CRITICAL
+      # 6️. Gerar resumo e falhar se HIGH/CRITICAL
       - name: Summarize vulnerabilities
         run: |
           set -e
@@ -101,10 +109,12 @@ jobs:
             echo "No HIGH/CRITICAL vulnerabilities detected."
           fi
 
-      # 6️. Upload JSON completo
-      - name: Upload Trivy JSON report
+      # 7️. Upload dos relatórios
+      - name: Upload reports
         if: always()
         uses: actions/upload-artifact@v4
         with:
-          name: trivy-dependency-report
-          path: trivy-deps.json
+          name: trivy-dependency-reports
+          path: |
+            sbom.cdx.json
+            trivy-deps.json
