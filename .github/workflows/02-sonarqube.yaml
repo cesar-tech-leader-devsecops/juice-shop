@@ -1,6 +1,7 @@
 # ---------------------------------------------------------
 # Workflow: 02-SonarQube.yml
 # Objetivo: Executar análise SAST com SonarQube local (self-contained)
+# Ferramentas: SonarQube
 # ---------------------------------------------------------
 
 name: 02-SonarQube

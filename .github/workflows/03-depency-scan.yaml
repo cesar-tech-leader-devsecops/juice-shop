@@ -1,0 +1,88 @@
+# ---------------------------------------------------------
+# Workflow: 03-Dependency-Scan.yml
+# Objetivo: Analisar vulnerabilidades conhecidas em dependências
+# Ferramentas: Trivy (Node, Java, Python)
+# ---------------------------------------------------------
+
+name: 03-Dependency-Scan
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+# Cancel previous runs if um novo commit for enviado
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  dependency-scan:
+    name: Dependency Vulnerability Scan
+    runs-on: [arc-runner-set]
+    permissions:
+      contents: read
+      pull-requests: read
+      security-events: write
+
+    steps:
+      # 1. Checkout do código
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2. Instala Trivy
+      - name: Install Trivy
+        run: |
+          curl -sfL https://raw.githubusercontent.com/aquasecurity/trivy/main/contrib/install.sh | sh
+          trivy --version
+
+      # 3. Detecta quais gerenciadores de pacotes estão presentes
+      - name: Detect package manager
+        id: detect
+        run: |
+          if [ -f package-lock.json ] || [ -f package.json ]; then
+            echo "PACKAGE_MANAGER=node" >> $GITHUB_ENV
+          elif [ -f pom.xml ]; then
+            echo "PACKAGE_MANAGER=maven" >> $GITHUB_ENV
+          elif [ -f requirements.txt ]; then
+            echo "PACKAGE_MANAGER=python" >> $GITHUB_ENV
+          else
+            echo "PACKAGE_MANAGER=unknown" >> $GITHUB_ENV
+          fi
+          echo "Detected package manager: $PACKAGE_MANAGER"
+
+      # 4. Executa Trivy para escanear vulnerabilidades nas dependências
+      - name: Run Trivy Dependency Scan
+        id: trivy-scan
+        run: |
+          REPORT="trivy-deps.json"
+          if [ "$PACKAGE_MANAGER" = "node" ]; then
+            trivy fs --scanners vuln --severity CRITICAL,HIGH --format json --output $REPORT .
+          elif [ "$PACKAGE_MANAGER" = "maven" ]; then
+            trivy fs --scanners vuln --severity CRITICAL,HIGH --format json --output $REPORT .
+          elif [ "$PACKAGE_MANAGER" = "python" ]; then
+            trivy fs --scanners vuln --severity CRITICAL,HIGH --format json --output $REPORT .
+          else
+            echo "No supported package manager found. Skipping Trivy scan."
+            exit 0
+          fi
+
+      # 5. Gera resumo legível no Actions Summary
+      - name: Generate Dependency Scan Summary
+        if: always()
+        run: |
+          REPORT="trivy-deps.json"
+          echo "## Dependency Vulnerability Scan" >> $GITHUB_STEP_SUMMARY
+          if [ -f $REPORT ] && [ -s $REPORT ]; then
+            COUNT=$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | length' $REPORT)
+            echo "Encontradas $COUNT vulnerabilidades críticas ou altas." >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+            cat $REPORT | jq '.' >> $GITHUB_STEP_SUMMARY
+            echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+            if [ "$COUNT" -gt 0 ]; then
+              echo "Falha: Vulnerabilidades críticas/altas detectadas!"
+              exit 1
+            fi
+          else
+            echo "Nenhuma vulnerabilidade crítica/alta encontrada nas dependências."
+          fi
