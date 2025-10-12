@@ -44,10 +44,9 @@ jobs:
 
       # 3. Instala Node.js localmente (autocontido)
       - name: Setup Node.js
-        if: env.PACKAGE_MANAGER == 'node'
         run: |
-          curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
-          sudo apt-get install -y nodejs
+          curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
+          sudo apt-get install -y nodejs build-essential
 
       # 4. Instala dependências Node
       - name: Install Node.js dependencies
