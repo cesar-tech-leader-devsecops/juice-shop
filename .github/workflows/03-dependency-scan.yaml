@@ -81,13 +81,8 @@ jobs:
           sudo apt-get update -y
           sudo apt-get install -y trivy
           trivy --version
-          trivy image --help >/dev/null 2>&1
 
-      # 6. Atualiza banco de vulnerabilidades do Trivy
-      - name: Update Trivy DB
-        run: trivy --download-db-only
-
-      # 7. Executa o scan das dependências (fs -> node_modules)
+      # 6. Executa o scan das dependências Node.js
       - name: Run Trivy Node Dependency Scan
         if: env.PACKAGE_MANAGER == 'node'
         run: |
@@ -101,10 +96,11 @@ jobs:
             --output trivy-deps.json \
             --skip-dirs .git \
             --skip-dirs node_modules/.cache \
-            --timeout 10m
+            --timeout 10m \
+            --no-progress
           echo "Trivy scan completed."
 
-      # 8. Gera summary e falha em caso de HIGH/CRITICAL
+      # 7. Gera summary e falha em caso de HIGH/CRITICAL
       - name: Generate Dependency Scan Summary and fail on HIGH/CRITICAL
         if: env.PACKAGE_MANAGER == 'node'
         run: |
