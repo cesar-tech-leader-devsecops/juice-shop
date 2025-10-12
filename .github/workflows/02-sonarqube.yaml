@@ -41,7 +41,9 @@ jobs:
       - name: Install dependencies
         run: |
           sudo apt-get update -y
-          sudo apt-get install -y openjdk-17-jdk jq unzip curl
+          sudo apt-get install -y openjdk-17-jdk jq unzip curl locales
+          sudo locale-gen en_US.UTF-8
+          export LANG=en_US.UTF-8
 
       # 3. Baixa e instala o sonar-scanner CLI
       - name: Install SonarScanner CLI
@@ -82,7 +84,8 @@ jobs:
             -Dsonar.projectKey=local-analysis \
             -Dsonar.projectName="Local SonarQube Demo" \
             -Dsonar.sources=. \
-            -Dsonar.exclusions=**/tests/** \
+            -Dsonar.exclusions=**/tests/**,**/*.png,**/*.jpg,**/*.jpeg,**/*.gif,**/*.svg,**/uploads/** \
+            -Dsonar.sourceEncoding=UTF-8 \
             -Dsonar.host.url=$SONAR_HOST_URL \
             -Dsonar.login=$SONAR_TOKEN \
             -Dsonar.qualitygate.wait=true
