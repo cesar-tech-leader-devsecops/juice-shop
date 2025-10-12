@@ -1,7 +1,7 @@
 # ---------------------------------------------------------
 # Workflow: 03-Dependency-Scan.yml
-# Objetivo: Analisar vulnerabilidades conhecidas em dependências
-# Ferramentas: Trivy (Node, Maven, Python) - autocontido
+# Objetivo: Analisar vulnerabilidades conhecidas em dependências Node
+# Ferramenta: Trivy (Node.js)
 # ---------------------------------------------------------
 
 name: 03-Dependency-Scan
@@ -17,7 +17,7 @@ concurrency:
 
 jobs:
   dependency-scan:
-    name: Dependency Vulnerability Scan
+    name: Node.js Dependency Vulnerability Scan
     runs-on: [arc-runner-set]
     permissions:
       contents: read
@@ -31,104 +31,69 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 2. Detecta o gerenciador de pacotes (Node, Maven, Python)
-      - name: Detect package manager
+      # 2. Detecta se é Node.js
+      - name: Detect Node.js project
         id: detect
         run: |
-          if [ -f package-lock.json ] || [ -f package.json ]; then
+          if [ -f package.json ]; then
             echo "PACKAGE_MANAGER=node" >> $GITHUB_ENV
-          elif [ -f pom.xml ]; then
-            echo "PACKAGE_MANAGER=maven" >> $GITHUB_ENV
-          elif [ -f requirements.txt ]; then
-            echo "PACKAGE_MANAGER=python" >> $GITHUB_ENV
           else
             echo "PACKAGE_MANAGER=unknown" >> $GITHUB_ENV
           fi
           echo "Detected package manager: $PACKAGE_MANAGER"
 
-      # 3. Instala dependências locais quando necessário (para que Trivy escaneie node_modules / target / venv)
-      - name: Install project dependencies (if needed)
+      # 3. Instala Node.js localmente (autocontido)
+      - name: Setup Node.js
+        if: env.PACKAGE_MANAGER == 'node'
         run: |
-          set -e
-          if [ "$PACKAGE_MANAGER" = "node" ]; then
-            # NPM: usar package-lock.json se existir para garantir versões reproduzíveis
-            if [ -f package-lock.json ]; then
-              npm ci --prefer-offline --no-audit --no-fund
-            else
-              # se não houver lockfile, instala a versão do package.json (pode trazer a versão vulnerável especificada)
-              npm install --no-audit --no-fund
-            fi
-          elif [ "$PACKAGE_MANAGER" = "maven" ]; then
-            # Maven: baixa dependências para permitir scan (vai criar target/)
-            sudo apt-get update -y
-            sudo apt-get install -y maven
-            mvn -q -DskipTests dependency:go-offline
-          elif [ "$PACKAGE_MANAGER" = "python" ]; then
-            # Python: cria virtualenv e instala
-            sudo apt-get update -y
-            sudo apt-get install -y python3-venv python3-pip
-            python3 -m venv .venv
-            . .venv/bin/activate
-            pip install --upgrade pip
-            if [ -f requirements.txt ]; then
-              pip install -r requirements.txt
-            fi
+          curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+
+      # 4. Instala dependências Node
+      - name: Install Node.js dependencies
+        if: env.PACKAGE_MANAGER == 'node'
+        run: |
+          if [ -f package-lock.json ]; then
+            npm ci --prefer-offline --no-audit --no-fund
           else
-            echo "No supported package manager found. Skipping install step."
+            npm install --no-audit --no-fund
           fi
 
-      # 4. Executa Trivy Vulnerability Scan (dependências)
-      - name: Run Trivy Dependency Scan
-        id: trivy-deps
-        uses: aquasecurity/trivy-action@0.33.1
+      # 5. Executa Trivy Vulnerability Scan
+      - name: Run Trivy Node Dependency Scan
+        if: env.PACKAGE_MANAGER == 'node'
+        uses: aquasecurity/trivy-action@v0.35.0
         with:
           scan-type: fs
           scanners: vuln
-          # escopo: bibliotecas (library) é o que queremos detectar em node_modules e em jars/wheels
           vuln-type: library
           format: json
           output: trivy-deps.json
-          # procura apenas HIGH e CRITICAL (mude se quiser incluir MEDIUM)
           severity: HIGH,CRITICAL
-          # Não ignore problemas não corrigidos (mais verboso)
           ignore-unfixed: false
         env:
-          # Aumenta timeout DB se necessário (opcional)
           TRIVY_CACHE_DIR: /tmp/.trivycache
 
-      # 5. Gera resumo legível no Actions Summary e falha se encontrar HIGH/CRITICAL
+      # 6. Gera resumo e falha se houver vulnerabilidades HIGH/CRITICAL
       - name: Generate Dependency Scan Summary
-        if: always()
+        if: env.PACKAGE_MANAGER == 'node'
         run: |
-          set -e
           REPORT="trivy-deps.json"
           echo "## Dependency Vulnerability Scan" >> $GITHUB_STEP_SUMMARY
 
           if [ -f "$REPORT" ] && [ -s "$REPORT" ]; then
-            # conta todas as vulnerabilidades HIGH/CRITICAL encontradas
-            COUNT=$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | length' "$REPORT" )
+            COUNT=$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | length' "$REPORT")
             echo "Encontradas $COUNT vulnerabilidades críticas ou altas." >> $GITHUB_STEP_SUMMARY
 
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Amostra de vulnerabilidades (até 20) e paths afetados" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
-            # mostra um JSON legível com as primeiras 20 ocorrências
             jq '[.Results[]? | {target: .Target, type: .Type, vulns: (.Vulnerabilities[]? | {VulnerabilityID, PkgName, InstalledVersion, Severity, Title, PrimaryURL})}] | .[0:20]' "$REPORT" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
-            # listar arquivos / pacotes afetados (conciso)
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Pacotes afetados (ex.: package / arquivo) — amostra" >> $GITHUB_STEP_SUMMARY
-            jq -r '.Results[]? | select(.Vulnerabilities != null) | .Target + " -> " + ([.Vulnerabilities[] | select(.Severity=="CRITICAL" or .Severity=="HIGH") ] | map(.VulnerabilityID + " (" + .Severity + ")") | join(", "))' "$REPORT" | head -n 40 >> $GITHUB_STEP_SUMMARY
-
-            # se encontrou, falha
             if [ "$COUNT" -gt 0 ]; then
               echo ""
               echo "Falha: Vulnerabilidades críticas/altas detectadas: $COUNT"
-              # Saída explícita para o log e falha do job
               exit 1
             else
-              echo ""
               echo "Nenhuma vulnerabilidade HIGH/CRITICAL encontrada."
             fi
           else
