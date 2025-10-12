@@ -1,8 +1,8 @@
 # ---------------------------------------------------------
 # Workflow: 03-Dependency-Scan.yml
 # Objetivo: Detectar vulnerabilidades em dependências Node.js
-# Ferramenta: Trivy (scan direto)
-# Rápido, autocontido e falha apenas em HIGH/CRITICAL
+# Ferramenta: Trivy (modo SBOM - mais rápido e leve)
+# Autocontido, sem dependência de lockfile, falha apenas em HIGH/CRITICAL
 # ---------------------------------------------------------
 
 name: 03-Dependency-Scan
@@ -36,26 +36,7 @@ jobs:
         with:
           node-version: 22
 
-      # 3️. Instalar dependências de compilação
-      - name: Install build tools
-        run: |
-          set -e
-          sudo apt-get update -qq
-          sudo apt-get install -y build-essential python3
-          echo "Build tools installed."
-
-      # 4️. Instalar dependências do projeto (resiliente ao lockfile ausente)
-      - name: Install Node.js dependencies
-        run: |
-          set -e
-          if [ -f package-lock.json ]; then
-            npm ci --no-audit --no-fund || npm install --no-audit --no-fund
-          else
-            npm install --no-audit --no-fund
-          fi
-          echo "Node modules installed."
-
-      # 5️. Instalar Trivy (binário direto)
+      # 3️. Instalar Trivy (binário direto)
       - name: Install Trivy
         run: |
           set -e
@@ -65,14 +46,13 @@ jobs:
           sudo mv trivy /usr/local/bin/
           trivy --version
 
-      # 6️. Executar scan
-      - name: Run Trivy scan on Node dependencies
+      # 4️. Executar análise SBOM (sem instalar dependências)
+      - name: Run Trivy SBOM scan on Node.js dependencies
         run: |
           set -e
-          echo "Running Trivy vulnerability scan..."
-          trivy fs . \
+          echo "Running Trivy SBOM vulnerability scan..."
+          trivy sbom . \
             --scanners vuln \
-            --vuln-type library \
             --severity LOW,MEDIUM,HIGH,CRITICAL \
             --format json \
             --output trivy-deps.json \
@@ -80,7 +60,7 @@ jobs:
             --timeout 5m
           echo "Scan completed. JSON report saved."
 
-      # 7️. Gerar resumo e falhar se HIGH/CRITICAL
+      # 5️. Gerar resumo e falhar se HIGH/CRITICAL
       - name: Summarize vulnerabilities
         run: |
           set -e
@@ -105,23 +85,23 @@ jobs:
           echo "- TOTAL: $TOTAL" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          echo "###  Top 10 HIGH/CRITICAL" >> $GITHUB_STEP_SUMMARY
+          echo "### Top 10 HIGH/CRITICAL" >> $GITHUB_STEP_SUMMARY
           jq -r '[.Results[]? | .Vulnerabilities[]? | select(.Severity=="HIGH" or .Severity=="CRITICAL") |
             "- \(.PkgName)@\(.InstalledVersion): **\(.Severity)** — \(.Title)"] | .[0:10][]' "$REPORT" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
-          echo "###  Top 10 MEDIUM/LOW" >> $GITHUB_STEP_SUMMARY
+          echo "### Top 10 MEDIUM/LOW" >> $GITHUB_STEP_SUMMARY
           jq -r '[.Results[]? | .Vulnerabilities[]? | select(.Severity=="MEDIUM" or .Severity=="LOW") |
             "- \(.PkgName)@\(.InstalledVersion): **\(.Severity)** — \(.Title)"] | .[0:10][]' "$REPORT" >> $GITHUB_STEP_SUMMARY
 
           if [ "$HIGH" -gt 0 ] || [ "$CRITICAL" -gt 0 ]; then
-            echo " Detected $((HIGH + CRITICAL)) HIGH/CRITICAL vulnerabilities."
+            echo "Detected $((HIGH + CRITICAL)) HIGH/CRITICAL vulnerabilities."
             exit 1
           else
-            echo " No HIGH/CRITICAL vulnerabilities detected."
+            echo "No HIGH/CRITICAL vulnerabilities detected."
           fi
 
-      # 8️. Upload JSON completo
+      # 6️. Upload JSON completo
       - name: Upload Trivy JSON report
         if: always()
         uses: actions/upload-artifact@v4
