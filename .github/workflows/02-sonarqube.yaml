@@ -1,0 +1,57 @@
+# ---------------------------------------------------------
+# Workflow: 02-SonarQube.yml
+# Objetivo: Executar análise estática de código (SAST)
+# Ferramenta: SonarQube / SonarCloud
+# ---------------------------------------------------------
+
+name: 02-SonarQube
+
+on:
+  push:
+    branches: [main, dev]
+  pull_request:
+
+permissions:
+  contents: read
+  pull-requests: read
+
+jobs:
+  sonar-sast:
+    name: SAST Analysis (SonarQube)
+    runs-on: ubuntu-latest
+
+    steps:
+      # 1️. Faz checkout do código
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      # 2️. Configura o Java (requisito do scanner)
+      - name: Set up JDK
+        uses: actions/setup-java@v4
+        with:
+          java-version: '17'
+          distribution: 'temurin'
+
+      # 3️. Baixa e executa o scanner oficial do SonarQube
+      # (Funciona tanto com SonarCloud quanto com SonarQube local)
+      - name: SonarQube Scan
+        uses: SonarSource/sonarqube-scan-action@v3
+        env:
+          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
+          # Use um dos dois abaixo:
+          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}       # Para SonarQube local
+          #SONAR_HOST_URL: https://sonarcloud.io               # Para SonarCloud
+        with:
+          args: >
+            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
+            -Dsonar.organization=${{ secrets.SONAR_ORG }}
+            -Dsonar.sources=.
+            -Dsonar.exclusions=**/tests/**
+            -Dsonar.qualitygate.wait=true
+
+      # 4️. Mostra o status da análise no resumo do job
+      - name: Summary
+        if: always()
+        run: |
+          echo "## 🔍 SonarQube / SonarCloud SAST Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "✅ Análise concluída. Verifique o dashboard do SonarQube para resultados detalhados." >> $GITHUB_STEP_SUMMARY
