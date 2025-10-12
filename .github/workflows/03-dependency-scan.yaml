@@ -31,7 +31,7 @@ jobs:
         with:
           fetch-depth: 0
 
-      # 2. Detecta se é Node.js
+      # 2. Detecta se é Node.js (define env)
       - name: Detect Node.js project
         id: detect
         run: |
@@ -42,23 +42,42 @@ jobs:
           fi
           echo "Detected package manager: $PACKAGE_MANAGER"
 
-      # 3. Instala Node.js localmente (autocontido)
-      - name: Setup Node.js
-        run: |
-          curl -fsSL https://deb.nodesource.com/setup_24.x | sudo -E bash -
-          sudo apt-get install -y nodejs build-essential
-
-      # 4. Instala dependências Node
-      - name: Install Node.js dependencies
+      # 3. Setup Node.js (reprodutível) e instala ferramentas de build + jq
+      - name: Setup Node.js & build tools
+        if: env.PACKAGE_MANAGER == 'node'
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20" # compatível com "node": "20 - 24" do package.json
+          cache: "npm"
+      - name: Install build tools and jq (apt)
         if: env.PACKAGE_MANAGER == 'node'
         run: |
+          sudo apt-get update -y
+          # ferramentas necessárias para compilar módulos nativos (node-gyp)
+          sudo apt-get install -y build-essential python3 python3-dev make gcc g++ pkg-config
+          # jq para parsing de JSON no summary
+          sudo apt-get install -y jq
+          node --version
+          npm --version
+
+      # 4. Instala dependências Node (gera node_modules para a varredura)
+      - name: Install Node.js dependencies (npm ci)
+        if: env.PACKAGE_MANAGER == 'node'
+        run: |
+          set -e
+          # se houver package-lock.json, preferir npm ci para reprodutibilidade
           if [ -f package-lock.json ]; then
+            echo "Using npm ci (lockfile detected)"
             npm ci --prefer-offline --no-audit --no-fund
           else
+            echo "No lockfile: running npm install (may install latest matching semver)"
             npm install --no-audit --no-fund
           fi
+          # list first-level deps (debug)
+          echo "Installed top-level packages:"
+          jq -r 'keys[]' package.json | head -n 30 || true
 
-      # 5. Executa Trivy Vulnerability Scan
+      # 5. Executa Trivy Vulnerability Scan nas dependências (fs -> verifica node_modules)
       - name: Run Trivy Node Dependency Scan
         if: env.PACKAGE_MANAGER == 'node'
         uses: aquasecurity/trivy-action@0.33.1
@@ -73,28 +92,39 @@ jobs:
         env:
           TRIVY_CACHE_DIR: /tmp/.trivycache
 
-      # 6. Gera resumo e falha se houver vulnerabilidades HIGH/CRITICAL
-      - name: Generate Dependency Scan Summary
+      # 6. Gera summary e falha se houver HIGH/CRITICAL
+      - name: Generate Dependency Scan Summary and fail on HIGH/CRITICAL
         if: env.PACKAGE_MANAGER == 'node'
         run: |
+          set -e
           REPORT="trivy-deps.json"
           echo "## Dependency Vulnerability Scan" >> $GITHUB_STEP_SUMMARY
 
           if [ -f "$REPORT" ] && [ -s "$REPORT" ]; then
+            # conta HIGH + CRITICAL
             COUNT=$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | length' "$REPORT")
             echo "Encontradas $COUNT vulnerabilidades críticas ou altas." >> $GITHUB_STEP_SUMMARY
 
             echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+            # Mostra amostra (até 20) com target e info relevante
             jq '[.Results[]? | {target: .Target, type: .Type, vulns: (.Vulnerabilities[]? | {VulnerabilityID, PkgName, InstalledVersion, Severity, Title, PrimaryURL})}] | .[0:20]' "$REPORT" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
+            echo "" >> $GITHUB_STEP_SUMMARY
+            echo "### Pacotes afetados (amostra) e IDs" >> $GITHUB_STEP_SUMMARY
+            jq -r '.Results[]? | select(.Vulnerabilities != null) | .Target + " -> " + ([.Vulnerabilities[] | select(.Severity=="CRITICAL" or .Severity=="HIGH") ] | map(.VulnerabilityID + " (" + .Severity + ")") | join(", "))' "$REPORT" | head -n 40 >> $GITHUB_STEP_SUMMARY
+
             if [ "$COUNT" -gt 0 ]; then
               echo ""
-              echo "Falha: Vulnerabilidades críticas/altas detectadas: $COUNT"
+              echo "Falha: Vulnerabilidades críticos/altas detectadas: $COUNT"
+              # garante que o job falhe (exit code != 0)
               exit 1
             else
+              echo ""
               echo "Nenhuma vulnerabilidade HIGH/CRITICAL encontrada."
             fi
           else
-            echo "Nenhum relatório gerado pelo Trivy (relatório ausente ou vazio)."
+            echo "Nenhum relatório gerado pelo Trivy (relatório ausente ou vazio)." >> $GITHUB_STEP_SUMMARY
+            # Caso queira que a falta de relatório também falhe, descomente a linha abaixo:
+            # exit 1
           fi
