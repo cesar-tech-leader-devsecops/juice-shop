@@ -74,17 +74,16 @@ jobs:
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### Packages with vulnerabilities" >> $GITHUB_STEP_SUMMARY
-          jq -r '
-            .advisories[]? |
-            .module_name' "$REPORT" | sort | uniq -c | sort -nr |
-            awk '{ printf "- %s (%s issues)\n", $2, $1 }' >> $GITHUB_STEP_SUMMARY || echo "No vulnerable packages found." >> $GITHUB_STEP_SUMMARY
+          jq -r '.vulnerabilities | to_entries[] |
+                "- \(.key): \(.value.via | length) vulnerability(ies), severity: \(.value.severity)"' \
+              "$REPORT" >> $GITHUB_STEP_SUMMARY || echo "No vulnerable packages found." >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
 
           echo "### Top 10 Vulnerabilities" >> $GITHUB_STEP_SUMMARY
-          jq -r '
-            .advisories[]? |
-            "- \(.module_name)@\(.findings[0].version): **\(.severity | ascii_upcase)** — \(.title)"' \
-            "$REPORT" | head -n 10 >> $GITHUB_STEP_SUMMARY || echo "No vulnerabilities found." >> $GITHUB_STEP_SUMMARY
+          jq -r '.vulnerabilities | to_entries[] | 
+                .value.via[] | 
+                "- \(.name): **\(.severity | ascii_upcase)** — \(.title // .url)"' \
+              "$REPORT" | head -n 10 >> $GITHUB_STEP_SUMMARY || echo "No vulnerabilities found." >> $GITHUB_STEP_SUMMARY
 
           if [ "$HIGH" -gt 0 ] || [ "$CRITICAL" -gt 0 ]; then
             echo "Detected $((HIGH + CRITICAL)) HIGH/CRITICAL vulnerabilities."
