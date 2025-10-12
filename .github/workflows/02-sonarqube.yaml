@@ -1,7 +1,7 @@
 # ---------------------------------------------------------
 # Workflow: 02-SonarQube.yml
 # Objetivo: Executar análise estática de código (SAST)
-# Ferramenta: SonarQube (local ou SonarCloud)
+# Ferramenta: SonarQube rodando localmente (em serviço)
 # ---------------------------------------------------------
 
 name: 02-SonarQube
@@ -17,73 +17,107 @@ permissions:
 
 jobs:
   sonar-sast:
-    name: SAST Analysis (SonarQube)
+    name:  SAST Analysis (SonarQube Local)
     runs-on: ubuntu-latest
 
+    services:
+      sonarqube:
+        image: sonarqube:lts-community
+        ports:
+          - 9000:9000
+        options: >-
+          --health-cmd="curl -f http://localhost:9000/api/system/health || exit 1"
+          --health-interval=10s
+          --health-timeout=5s
+          --health-retries=30
+
     steps:
-      # -----------------------------------------------------
-      # 1️. Faz checkout do código
-      # -----------------------------------------------------
-      - name: Checkout repository
+      # 1. Faz checkout do código
+      - name:  Checkout repository
         uses: actions/checkout@v4
 
-      # -----------------------------------------------------
-      # 2️. Configura o Java (requisito do Sonar Scanner)
-      # -----------------------------------------------------
-      - name: Set up JDK
+      # 2. Instala dependências de rede e espera o Sonar estar pronto
+      - name:  Aguardar SonarQube iniciar
+        run: |
+          echo "Aguardando SonarQube iniciar..."
+          for i in {1..60}; do
+            STATUS=$(curl -s http://localhost:9000/api/system/health | jq -r '.health' || true)
+            if [ "$STATUS" = "GREEN" ]; then
+              echo "✅ SonarQube está pronto!"
+              break
+            fi
+            echo "Aguardando... ($i/60)"
+            sleep 5
+          done
+
+      # 3. Gera um token de análise automaticamente
+      - name:  Gerar token de análise
+        id: token
+        run: |
+          echo "Gerando token para análise..."
+          # Cria o token via API
+          TOKEN_JSON=$(curl -s -u admin:admin -X POST "http://localhost:9000/api/user_tokens/generate?name=github_token")
+          TOKEN=$(echo "$TOKEN_JSON" | jq -r '.token')
+          if [ "$TOKEN" = "null" ] || [ -z "$TOKEN" ]; then
+            echo "Erro ao gerar token."
+            exit 1
+          fi
+          echo "Token gerado com sucesso."
+          echo "SONAR_TOKEN=$TOKEN" >> $GITHUB_ENV
+
+      # 4. Configura o Java (necessário para o scanner)
+      - name:  Configurar JDK
         uses: actions/setup-java@v4
         with:
           java-version: '17'
           distribution: 'temurin'
 
-      # -----------------------------------------------------
-      # 3️. Executa a análise com o scanner oficial
-      # -----------------------------------------------------
-      - name: SonarQube Scan
-        id: sonar
+      # 5. Executa o scanner
+      - name:  Rodar análise SonarQube
         uses: SonarSource/sonarqube-scan-action@v3
         env:
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}   # Ex: http://192.168.0.105:9191 ou https://sonarcloud.io
+          SONAR_TOKEN: ${{ env.SONAR_TOKEN }}
+          SONAR_HOST_URL: http://localhost:9000
         with:
           args: >
-            -Dsonar.projectKey=${{ secrets.SONAR_PROJECT_KEY }}
-            -Dsonar.organization=${{ secrets.SONAR_ORG }}
+            -Dsonar.projectKey=local-analysis
+            -Dsonar.projectName=Local SonarQube Demo
             -Dsonar.sources=.
             -Dsonar.exclusions=**/tests/**
             -Dsonar.qualitygate.wait=true
 
-      # -----------------------------------------------------
-      # 4️. Consulta a API do Sonar e mostra métricas no log
-      # -----------------------------------------------------
-      - name: Fetch and Print Sonar Metrics
-        if: success()
-        env:
-          SONAR_HOST_URL: ${{ secrets.SONAR_HOST_URL }}
-          SONAR_TOKEN: ${{ secrets.SONAR_TOKEN }}
-          SONAR_PROJECT_KEY: ${{ secrets.SONAR_PROJECT_KEY }}
+      # 6. Consulta resultados de métricas via API
+      - name:  Obter resultados da análise
+        id: results
         run: |
-          echo "Consultando métricas do SonarQube..."
-          sleep 10  # Pequeno delay para garantir que os resultados foram indexados
+          echo "Buscando métricas do projeto..."
+          sleep 10  # aguarda indexação
+          METRICS="bugs,vulnerabilities,code_smells,coverage"
+          RESPONSE=$(curl -s -u admin:${{ env.SONAR_TOKEN }} "http://localhost:9000/api/measures/component?component=local-analysis&metricKeys=$METRICS")
+          echo "$RESPONSE" | jq '.' > sonar-results.json
+          echo "JSON Results:"
+          cat sonar-results.json
+          echo "SONAR_RESPONSE=$(cat sonar-results.json | jq -c .)" >> $GITHUB_ENV
 
-          # Busca as métricas principais via API REST
-          curl -s -u "$SONAR_TOKEN:" \
-            "$SONAR_HOST_URL/api/measures/component?component=$SONAR_PROJECT_KEY&metricKeys=bugs,vulnerabilities,code_smells,coverage" \
-            | tee sonar-metrics.json | jq .
-
-      # -----------------------------------------------------
-      # 5️. Adiciona o resumo no painel do GitHub Actions
-      # -----------------------------------------------------
-      - name: Summary
+      # 7. Gera resumo legível no Action Summary
+      - name:  Resumo da análise
         if: always()
         run: |
-          echo "## SonarQube / SonarCloud SAST Analysis" >> $GITHUB_STEP_SUMMARY
+          echo "## 🔍 SonarQube Static Analysis (Local)" >> $GITHUB_STEP_SUMMARY
           echo "" >> $GITHUB_STEP_SUMMARY
-
-          if [[ -f sonar-metrics.json ]]; then
-            echo '```json' >> $GITHUB_STEP_SUMMARY
-            cat sonar-metrics.json >> $GITHUB_STEP_SUMMARY
-            echo '```' >> $GITHUB_STEP_SUMMARY
-          else
-            echo "Nenhuma métrica encontrada (verifique o SonarQube)." >> $GITHUB_STEP_SUMMARY
-          fi
+          echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
+          echo "${{ env.SONAR_RESPONSE }}" | jq '.' >> $GITHUB_STEP_SUMMARY
+          echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+          
+          BUGS=$(jq -r '.component.measures[] | select(.metric=="bugs") | .value' sonar-results.json)
+          VULNS=$(jq -r '.component.measures[] | select(.metric=="vulnerabilities") | .value' sonar-results.json)
+          SMELLS=$(jq -r '.component.measures[] | select(.metric=="code_smells") | .value' sonar-results.json)
+          COVERAGE=$(jq -r '.component.measures[] | select(.metric=="coverage") | .value' sonar-results.json)
+          
+          echo "" >> $GITHUB_STEP_SUMMARY
+          echo "| Métrica | Valor |" >> $GITHUB_STEP_SUMMARY
+          echo "|----------|--------|" >> $GITHUB_STEP_SUMMARY
+          echo "|  Bugs | $BUGS |" >> $GITHUB_STEP_SUMMARY
+          echo "|  Vulnerabilidades | $VULNS |" >> $GITHUB_STEP_SUMMARY
+          echo "|  Code Smells | $SMELLS |" >> $GITHUB_STEP_SUMMARY
+          echo "|  Cobertura | ${COVERAGE}% |" >> $GITHUB_STEP_SUMMARY
