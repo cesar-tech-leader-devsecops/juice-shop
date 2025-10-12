@@ -42,57 +42,69 @@ jobs:
           fi
           echo "Detected package manager: $PACKAGE_MANAGER"
 
-      # 3. Setup Node.js (reprodutível) e instala ferramentas de build + jq
-      - name: Setup Node.js & build tools
-        if: env.PACKAGE_MANAGER == 'node'
-        uses: actions/setup-node@v4
-        with:
-          node-version: "20" # compatível com "node": "20 - 24" do package.json
-          cache: "npm"
-      - name: Install build tools and jq (apt)
+      # 3. Instala Node.js + ferramentas básicas via apt
+      - name: Install Node.js and build tools manually
         if: env.PACKAGE_MANAGER == 'node'
         run: |
+          set -eux
+          echo "Installing Node.js 20.x and build tools..."
           sudo apt-get update -y
-          # ferramentas necessárias para compilar módulos nativos (node-gyp)
-          sudo apt-get install -y build-essential python3 python3-dev make gcc g++ pkg-config
-          # jq para parsing de JSON no summary
-          sudo apt-get install -y jq
-          node --version
-          npm --version
+          sudo apt-get install -y curl ca-certificates gnupg lsb-release jq build-essential python3 make gcc g++
+          curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+          sudo apt-get install -y nodejs
+          node -v
+          npm -v
 
-      # 4. Instala dependências Node (gera node_modules para a varredura)
-      - name: Install Node.js dependencies (npm ci)
+      # 4. Instala dependências Node.js (completo, incluindo devDependencies)
+      - name: Install dependencies
         if: env.PACKAGE_MANAGER == 'node'
         run: |
           set -e
-          # se houver package-lock.json, preferir npm ci para reprodutibilidade
           if [ -f package-lock.json ]; then
             echo "Using npm ci (lockfile detected)"
             npm ci --prefer-offline --no-audit --no-fund
           else
-            echo "No lockfile: running npm install (may install latest matching semver)"
+            echo "No lockfile found, using npm install"
             npm install --no-audit --no-fund
           fi
-          # list first-level deps (debug)
-          echo "Installed top-level packages:"
-          jq -r 'keys[]' package.json | head -n 30 || true
+          echo "Installed dependencies:"
+          ls -l node_modules | head -n 20 || true
 
-      # 5. Executa Trivy Vulnerability Scan nas dependências (fs -> verifica node_modules)
+      # 5. Instala Trivy (binário oficial)
+      - name: Install Trivy
+        run: |
+          set -e
+          echo "Installing Trivy..."
+          sudo apt-get install -y wget
+          wget -qO - https://aquasecurity.github.io/trivy-repo/deb/public.key | sudo gpg --dearmor -o /usr/share/keyrings/trivy.gpg
+          echo "deb [signed-by=/usr/share/keyrings/trivy.gpg] https://aquasecurity.github.io/trivy-repo/deb $(lsb_release -sc) main" | sudo tee /etc/apt/sources.list.d/trivy.list
+          sudo apt-get update -y
+          sudo apt-get install -y trivy
+          trivy --version
+          trivy image --help >/dev/null 2>&1
+
+      # 6. Atualiza banco de vulnerabilidades do Trivy
+      - name: Update Trivy DB
+        run: trivy --download-db-only
+
+      # 7. Executa o scan das dependências (fs -> node_modules)
       - name: Run Trivy Node Dependency Scan
         if: env.PACKAGE_MANAGER == 'node'
-        uses: aquasecurity/trivy-action@0.33.1
-        with:
-          scan-type: fs
-          scanners: vuln
-          vuln-type: library
-          format: json
-          output: trivy-deps.json
-          severity: HIGH,CRITICAL
-          ignore-unfixed: false
-        env:
-          TRIVY_CACHE_DIR: /tmp/.trivycache
+        run: |
+          set -e
+          echo "Running Trivy filesystem scan for Node.js dependencies..."
+          trivy fs . \
+            --scanners vuln \
+            --vuln-type library \
+            --severity HIGH,CRITICAL \
+            --format json \
+            --output trivy-deps.json \
+            --skip-dirs .git \
+            --skip-dirs node_modules/.cache \
+            --timeout 10m
+          echo "Trivy scan completed."
 
-      # 6. Gera summary e falha se houver HIGH/CRITICAL
+      # 8. Gera summary e falha em caso de HIGH/CRITICAL
       - name: Generate Dependency Scan Summary and fail on HIGH/CRITICAL
         if: env.PACKAGE_MANAGER == 'node'
         run: |
@@ -101,30 +113,20 @@ jobs:
           echo "## Dependency Vulnerability Scan" >> $GITHUB_STEP_SUMMARY
 
           if [ -f "$REPORT" ] && [ -s "$REPORT" ]; then
-            # conta HIGH + CRITICAL
             COUNT=$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | length' "$REPORT")
             echo "Encontradas $COUNT vulnerabilidades críticas ou altas." >> $GITHUB_STEP_SUMMARY
 
             echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
-            # Mostra amostra (até 20) com target e info relevante
-            jq '[.Results[]? | {target: .Target, type: .Type, vulns: (.Vulnerabilities[]? | {VulnerabilityID, PkgName, InstalledVersion, Severity, Title, PrimaryURL})}] | .[0:20]' "$REPORT" >> $GITHUB_STEP_SUMMARY
+            jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH") | {PkgName, InstalledVersion, Severity, Title, PrimaryURL}] | .[0:10]' "$REPORT" >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
 
-            echo "" >> $GITHUB_STEP_SUMMARY
-            echo "### Pacotes afetados (amostra) e IDs" >> $GITHUB_STEP_SUMMARY
-            jq -r '.Results[]? | select(.Vulnerabilities != null) | .Target + " -> " + ([.Vulnerabilities[] | select(.Severity=="CRITICAL" or .Severity=="HIGH") ] | map(.VulnerabilityID + " (" + .Severity + ")") | join(", "))' "$REPORT" | head -n 40 >> $GITHUB_STEP_SUMMARY
-
             if [ "$COUNT" -gt 0 ]; then
-              echo ""
-              echo "Falha: Vulnerabilidades críticos/altas detectadas: $COUNT"
-              # garante que o job falhe (exit code != 0)
+              echo "Falha: vulnerabilidades HIGH/CRITICAL detectadas ($COUNT)"
               exit 1
             else
-              echo ""
               echo "Nenhuma vulnerabilidade HIGH/CRITICAL encontrada."
             fi
           else
-            echo "Nenhum relatório gerado pelo Trivy (relatório ausente ou vazio)." >> $GITHUB_STEP_SUMMARY
-            # Caso queira que a falta de relatório também falhe, descomente a linha abaixo:
-            # exit 1
+            echo "Relatório vazio ou não gerado."
+            exit 1
           fi
