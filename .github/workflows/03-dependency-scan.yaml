@@ -62,7 +62,7 @@ jobs:
       # 5. Executa Trivy Vulnerability Scan
       - name: Run Trivy Node Dependency Scan
         if: env.PACKAGE_MANAGER == 'node'
-        uses: aquasecurity/trivy-action@v0.35.0
+        uses: aquasecurity/trivy-action@0.33.1
         with:
           scan-type: fs
           scanners: vuln
