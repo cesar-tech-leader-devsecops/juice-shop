@@ -80,7 +80,7 @@ jobs:
       # 4. Executa Trivy Vulnerability Scan (dependências)
       - name: Run Trivy Dependency Scan
         id: trivy-deps
-        uses: aquasecurity/trivy-action@v0.33.1
+        uses: aquasecurity/trivy-action@0.33.1
         with:
           scan-type: fs
           scanners: vuln
