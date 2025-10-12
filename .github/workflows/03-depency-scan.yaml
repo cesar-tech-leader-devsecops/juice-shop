@@ -26,23 +26,11 @@ jobs:
       security-events: write
 
     steps:
-      # 1. Checkout do código
+      # 1️. Checkout do código
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      # 2. Instala dependências necessárias
-      - name: Install system dependencies
-        run: |
-          sudo apt-get update -y
-          sudo apt-get install -y curl jq unzip
-
-      # 3. Instala Trivy via apt (modo consistente e autocontido)
-      - name: Install Trivy
-        run: |
-          sudo apt-get install -y trivy
-          trivy --version
-
-      # 4. Detecta quais gerenciadores de pacotes estão presentes
+      # 2️. Detecta o gerenciador de pacotes (Node, Maven, Python)
       - name: Detect package manager
         id: detect
         run: |
@@ -57,34 +45,32 @@ jobs:
           fi
           echo "Detected package manager: $PACKAGE_MANAGER"
 
-      # 5. Executa Trivy para escanear vulnerabilidades nas dependências
+      # 3️. Executa Trivy Vulnerability Scan (dependências)
       - name: Run Trivy Dependency Scan
-        id: trivy-scan
-        run: |
-          REPORT="trivy-deps.json"
-          if [ "$PACKAGE_MANAGER" = "node" ]; then
-            trivy fs --scanners vuln --severity CRITICAL,HIGH --format json --output $REPORT .
-          elif [ "$PACKAGE_MANAGER" = "maven" ]; then
-            trivy fs --scanners vuln --severity CRITICAL,HIGH --format json --output $REPORT .
-          elif [ "$PACKAGE_MANAGER" = "python" ]; then
-            trivy fs --scanners vuln --severity CRITICAL,HIGH --format json --output $REPORT .
-          else
-            echo "No supported package manager found. Skipping Trivy scan."
-            exit 0
-          fi
+        id: trivy-deps
+        uses: aquasecurity/trivy-action@0.33.1
+        with:
+          scan-type: fs # file system scan
+          scanners: vuln # vulnerabilidades
+          severity: HIGH,CRITICAL
+          format: json
+          output: trivy-deps.json
 
-      # 6. Gera resumo legível no Actions Summary e falha se houver CVEs críticas/altas
+      # 4️. Gera resumo legível no Actions Summary
       - name: Generate Dependency Scan Summary
         if: always()
         run: |
           REPORT="trivy-deps.json"
           echo "## Dependency Vulnerability Scan" >> $GITHUB_STEP_SUMMARY
+
           if [ -f $REPORT ] && [ -s $REPORT ]; then
             COUNT=$(jq '[.Results[]? | .Vulnerabilities[]? | select(.Severity=="CRITICAL" or .Severity=="HIGH")] | length' $REPORT)
             echo "Encontradas $COUNT vulnerabilidades críticas ou altas." >> $GITHUB_STEP_SUMMARY
+
             echo "\`\`\`json" >> $GITHUB_STEP_SUMMARY
             cat $REPORT | jq '.' >> $GITHUB_STEP_SUMMARY
             echo "\`\`\`" >> $GITHUB_STEP_SUMMARY
+
             if [ "$COUNT" -gt 0 ]; then
               echo "Falha: Vulnerabilidades críticas/altas detectadas!"
               exit 1
