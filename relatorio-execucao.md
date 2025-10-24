@@ -83,7 +83,7 @@ A análise é feita **diretamente no `package.json`**, sem necessidade de instal
 
 #### 🔹 Print 1 — Execução da pipeline
 
-![Execução pipeline Dependecies-Scan](image-3.png)
+![Execução2](image-3.png)
 
 ---
 
