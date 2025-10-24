@@ -11,8 +11,8 @@ Este documento contém as informações específicas do Trabalho Final.
 
 - Luiz Massa
 - Iago Lima
-- Lucas
-- Eric
+- Lucas Cristiano Dantas
+- Eric Neder
 
 ---
 
@@ -110,13 +110,17 @@ repos:
    ```
 
 2. Instale os hooks definidos no repositório:
+
    ```bash
    pre-commit install
    ```
+
 3. Para rodar manualmente todos os hooks em todos os arquivos:
+
    ```bash
    pre-commit run --all-files
    ```
+
 4. Observações práticas:
    - Se um hook (por exemplo o `prettier`) alterar arquivos, faça `git add` nos arquivos modificados e tente o commit novamente.
    - Mensagens de falha dos hooks costumam indicar exatamente o problema (ex.: "secret detected in file X" ou "file Y exceeds max size"); use essas mensagens para corrigir antes de re-commit.
@@ -151,9 +155,15 @@ repos:
 
 ## Entregas Técnicas
 
-- **README.md:** instruções de execução e visão da arquitetura. - DONE
-- **Pipelines CI/CD:** automatizados, cobrindo pelo menos 3 técnicas de segurança (pre-commit hook, secret scan, SAST e dependency scan).- DONE
-- **Código da infraestrutura:** IaC (Docker Compose, Kubernetes, Terraform, etc.). - DONE
-- **Relatórios de ferramentas de segurança:** evidências de falhas detectadas, mesmo que não corrigidas, com resumos detalhados para avaliação. - IN PROGRESS
+- **README.md:** instruções de execução e visão da arquitetura.
+- **Pipelines CI/CD:** automatizados, cobrindo pelo menos 3 técnicas de segurança (pre-commit hook, secret scan, SAST e dependency scan).
+- **Código da infraestrutura:** IaC (Docker Compose, Kubernetes, Terraform, etc.).
+- **Relatórios de ferramentas de segurança:** O relatório com as evidências de falhas detectadas está [disponível aqui](relatorio-execucao.md).
+
+---
+
+## Entregas de Gestão
+
+- **entrega-gestao.md:** Documento contendo as justificativas para adoção das técnicas de DevSecOps e da Política de Segurança e suas boas práticas. Esse documento pode ser acessado [diretamente aqui](entrega-gestao.md) e também estará disponível em formato PDF e será entregue em conjunto com o link deste repositório.
 
 ---
